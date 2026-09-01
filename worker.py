@@ -1,7 +1,5 @@
 import base64
-import binascii
 import hashlib
-import io
 import os
 import random
 import re
@@ -13,6 +11,8 @@ import traceback
 import uuid
 from pathlib import Path
 
+from input_utils import decode_base64_image, download_r2_image, select_image_source
+
 MODEL_PATH = os.environ.get("HY3D_MODEL_PATH", "/models/Hunyuan3D-2mv")
 MODEL_SUBFOLDER = "hunyuan3d-dit-v2-mv"
 MODEL_REVISION = "3a761b539b29fe4ff64714813aa9560fd66f5de0"
@@ -20,6 +20,8 @@ SOURCE_COMMIT = "f8db63096c8282cb27354314d896feba5ba6ff8a"
 JOB_TMP_ROOT = os.environ.get("JOB_TMP_ROOT", "/tmp/hy3d-jobs")
 MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(20 * 1024 * 1024)))
 MAX_IMAGE_PIXELS = int(os.environ.get("MAX_IMAGE_PIXELS", "25000000"))
+INPUT_URL_TIMEOUT_SECONDS = 20
+MAX_INPUT_URL_TTL_SECONDS = 900
 PRESIGNED_URL_TTL = 3600
 
 REQUIRED_BUCKET_ENV = (
@@ -133,56 +135,6 @@ def _boolean_input(inp, name, default=False):
     return value
 
 
-def _decode_image(value, field_name, destination):
-    from PIL import Image, UnidentifiedImageError
-
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field_name} is required and must be a nonempty base64 string")
-
-    encoded = value.strip()
-    if encoded.startswith("data:"):
-        header, separator, encoded = encoded.partition(",")
-        if not separator or ";base64" not in header.lower():
-            raise ValueError(f"{field_name} has an invalid data URI")
-    encoded = "".join(encoded.split())
-    max_encoded_length = ((MAX_IMAGE_BYTES + 2) // 3) * 4
-    if len(encoded) > max_encoded_length:
-        raise ValueError(f"{field_name} exceeds the {MAX_IMAGE_BYTES}-byte decoded limit")
-
-    try:
-        raw = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ValueError(f"{field_name} is not valid base64") from exc
-    if not raw:
-        raise ValueError(f"{field_name} decodes to an empty file")
-    if len(raw) > MAX_IMAGE_BYTES:
-        raise ValueError(f"{field_name} exceeds the {MAX_IMAGE_BYTES}-byte decoded limit")
-
-    Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
-    try:
-        with Image.open(io.BytesIO(raw)) as source:
-            if getattr(source, "n_frames", 1) != 1:
-                raise ValueError(f"{field_name} must contain exactly one image frame")
-            width, height = source.size
-            if width < 2 or height < 2 or width * height > MAX_IMAGE_PIXELS:
-                raise ValueError(
-                    f"{field_name} dimensions must be at least 2x2 and at most "
-                    f"{MAX_IMAGE_PIXELS} pixels"
-                )
-            image = source.convert("RGBA")
-            image.load()
-    except ValueError:
-        raise
-    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
-        raise ValueError(f"{field_name} is not a valid supported raster image") from exc
-
-    alpha_bbox = image.getchannel("A").getbbox()
-    if alpha_bbox is None or alpha_bbox[2] - alpha_bbox[0] < 2 or alpha_bbox[3] - alpha_bbox[1] < 2:
-        raise ValueError(f"{field_name} has no usable nontransparent image area")
-
-    image.save(destination, format="PNG", optimize=False, compress_level=6)
-
-
 def _bucket_config():
     missing = [name for name in REQUIRED_BUCKET_ENV if not os.environ.get(name)]
     if missing:
@@ -210,7 +162,10 @@ def _upload_to_r2(job_id, output_path):
         aws_access_key_id=bucket["BUCKET_ACCESS_KEY_ID"],
         aws_secret_access_key=bucket["BUCKET_SECRET_ACCESS_KEY"],
         region_name="auto",
-        config=Config(signature_version="s3v4"),
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+        ),
     )
     client.upload_file(
         str(output_path),
@@ -273,7 +228,7 @@ def handler(job):
         if not isinstance(inp, dict):
             raise ValueError("input must be an object")
 
-        _bucket_config()
+        bucket = _bucket_config()
         seed = _integer_input(inp, "seed", 12345, 0, 2**63 - 1)
         num_inference_steps = _integer_input(
             inp, "num_inference_steps", 30, 1, 100
@@ -282,23 +237,41 @@ def handler(job):
         num_chunks = _integer_input(inp, "num_chunks", 20000, 1, 1_000_000)
         return_base64 = _boolean_input(inp, "return_base64", False)
 
+        sources = {}
         for view in REQUIRED_VIEWS:
-            field = f"{view}_image_base64"
-            if not isinstance(inp.get(field), str) or not inp[field].strip():
-                raise ValueError(f"{field} is required")
+            sources[view] = select_image_source(inp, view, True)
+        for view in OPTIONAL_VIEWS:
+            source = select_image_source(inp, view, False)
+            if source is not None:
+                sources[view] = source
 
         with tempfile.TemporaryDirectory(
             prefix=f"{job_id[:48]}-", dir=JOB_TMP_ROOT
         ) as job_dir:
             job_path = Path(job_dir)
             images = {}
-            for view in REQUIRED_VIEWS + OPTIONAL_VIEWS:
-                field = f"{view}_image_base64"
-                value = inp.get(field)
-                if view in OPTIONAL_VIEWS and value is None:
-                    continue
+            for view, source in sources.items():
+                source_type, field, value = source
                 image_path = job_path / f"{view}.png"
-                _decode_image(value, field, image_path)
+                if source_type == "base64":
+                    decode_base64_image(
+                        value,
+                        field,
+                        image_path,
+                        MAX_IMAGE_BYTES,
+                        MAX_IMAGE_PIXELS,
+                    )
+                else:
+                    download_r2_image(
+                        value,
+                        bucket["BUCKET_ENDPOINT_URL"],
+                        field,
+                        image_path,
+                        MAX_IMAGE_BYTES,
+                        MAX_IMAGE_PIXELS,
+                        INPUT_URL_TIMEOUT_SECONDS,
+                        MAX_INPUT_URL_TTL_SECONDS,
+                    )
                 images[view] = str(image_path)
 
             print(
