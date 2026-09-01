@@ -3,6 +3,7 @@ import binascii
 import hashlib
 import io
 import os
+import random
 import re
 import struct
 import tempfile
@@ -48,11 +49,16 @@ def load_model():
         flush=True,
     )
 
+    import numpy as np
     import torch
     from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required, but torch.cuda.is_available() is false")
+    torch.cuda.manual_seed_all(0)
 
     checkpoint = Path(MODEL_PATH) / MODEL_SUBFOLDER / "model.fp16.safetensors"
     config = Path(MODEL_PATH) / MODEL_SUBFOLDER / "config.yaml"
@@ -301,10 +307,15 @@ def handler(job):
                 flush=True,
             )
             started = time.monotonic()
+            import numpy as np
             import torch
 
-            generator = torch.Generator(device="cpu").manual_seed(seed)
             with _INFERENCE_LOCK, torch.inference_mode():
+                random.seed(seed)
+                np.random.seed(seed % (2**32))
+                torch.manual_seed(seed)
+                torch.cuda.manual_seed_all(seed)
+                generator = torch.Generator(device="cpu").manual_seed(seed)
                 meshes = PIPELINE(
                     image=images,
                     num_inference_steps=num_inference_steps,
