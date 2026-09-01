@@ -124,6 +124,6 @@ def run_smoke_test(worker_handler):
 
 
 if __name__ == "__main__":
-    from handler import handler
+    from worker import handler
 
     raise SystemExit(run_smoke_test(handler))

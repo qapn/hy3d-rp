@@ -49,6 +49,6 @@ ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
 WORKDIR /app
-COPY handler.py smoke_test.py /app/
+COPY handler.py worker.py smoke_test.py /app/
 
 CMD ["python", "-u", "/app/handler.py"]
