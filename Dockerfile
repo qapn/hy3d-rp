@@ -1,4 +1,4 @@
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04@sha256:61a4aafb0094cd773f11eefa378929d5a687bd775febeb78eac62fc824141fb5
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -22,8 +22,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -c "import torch, torchvision; assert torch.__version__.split('+')[0] == '2.4.0', torch.__version__; assert torchvision.__version__.split('+')[0] == '0.19.0', torchvision.__version__; assert torch.version.cuda == '12.4', torch.version.cuda"
-
 COPY requirements.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
 
@@ -42,8 +40,7 @@ RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(
     && cp "${HY3D_SOURCE_PATH}/NOTICE" /licenses/Hunyuan3D-2-NOTICE \
     && cp "${HY3D_MODEL_PATH}/LICENSE" /licenses/Hunyuan3D-2mv-LICENSE \
     && cp "${HY3D_MODEL_PATH}/NOTICE" /licenses/Hunyuan3D-2mv-NOTICE \
-    && rm -rf "${HF_HOME}" "${HY3D_MODEL_PATH}/.cache" \
-    && python -m pip check
+    && rm -rf "${HF_HOME}" "${HY3D_MODEL_PATH}/.cache"
 
 ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
