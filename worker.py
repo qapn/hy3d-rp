@@ -67,7 +67,14 @@ def load_model():
     torch.use_deterministic_algorithms(True, warn_only=True)
 
     device_name = torch.cuda.get_device_name(0)
-    print(f"[init] CUDA device: {device_name}; dtype=torch.float16", flush=True)
+    capability = torch.cuda.get_device_capability(0)
+    supported_arches = ",".join(torch.cuda.get_arch_list())
+    print(
+        f"[init] CUDA device: {device_name}; capability=sm_{capability[0]}{capability[1]}; "
+        f"torch={torch.__version__}; torch_cuda={torch.version.cuda}; "
+        f"arches={supported_arches}; dtype=torch.float16",
+        flush=True,
+    )
     PIPELINE = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
         MODEL_PATH,
         subfolder=MODEL_SUBFOLDER,
